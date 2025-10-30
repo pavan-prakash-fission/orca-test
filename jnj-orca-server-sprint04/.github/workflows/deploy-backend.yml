@@ -1,0 +1,125 @@
+name: Deploy Backend (Dev or QA)
+
+on:
+  push:
+    branches:
+      - dev     # auto-deploy to Dev on push to dev
+      - qa      # auto-deploy to QA on push to qa
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Target environment"
+        type: choice
+        required: true
+        default: dev
+        options: [dev, qa]
+      branch:
+        description: "Branch to deploy (default: matches env)"
+        type: string
+        required: false
+        default: ""
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      # If push: env is the branch name; if manual: from input
+      EVENT_ENV: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.env }}
+      # Branch: if push use the branch; if manual use input or fall back to env
+      TARGET_BRANCH: ${{ github.event_name == 'push' && github.ref_name || (github.event.inputs.branch != '' && github.event.inputs.branch || github.event.inputs.env) }}
+
+    steps:
+      - name: Echo plan
+        run: |
+          echo "Deploying backend to: ${EVENT_ENV}"
+          echo "Branch: ${TARGET_BRANCH}"
+
+      ####################################################################
+      # DEV deployment — /app/jnj-orca-server, Docker Compose build & up #
+      ####################################################################
+      - name: Deploy to DEV
+        if: env.EVENT_ENV == 'dev'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEV_APP_HOST }}
+          username: ${{ secrets.DEV_APP_USER }}
+          key: ${{ secrets.DEV_APP_SSH_KEY }}
+          port: ${{ secrets.DEV_APP_SSH_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            cd /app/jnj-orca-server
+
+            echo "==> Fetching code"
+            git fetch --all --prune
+            if git show-ref --verify --quiet refs/heads/${TARGET_BRANCH}; then
+              git checkout ${TARGET_BRANCH}
+            else
+              git checkout -b ${TARGET_BRANCH} origin/${TARGET_BRANCH}
+            fi
+            git reset --hard origin/${TARGET_BRANCH}
+
+            echo "==> Detect docker compose"
+            if command -v docker compose >/dev/null 2>&1; then
+              DC="docker compose"
+            else
+              DC="docker-compose"
+            fi
+
+            echo "==> Build (no cache) & pull base images"
+            $DC down || true
+            $DC build --no-cache --pull
+
+            echo "==> Up (detached)"
+            $DC up -d
+
+            echo "==> Status"
+            $DC ps
+            echo "==> Tail logs"
+            $DC logs --tail=100 || true
+
+      ####################################################################
+      # QA deployment — /app/jnj-orca-server, Docker Compose build & up  #
+      ####################################################################
+      - name: Deploy to QA
+        if: env.EVENT_ENV == 'qa'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.QA_APP_HOST }}
+          username: ${{ secrets.QA_APP_USER }}
+          key: ${{ secrets.QA_APP_SSH_KEY }}
+          port: ${{ secrets.QA_APP_SSH_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            cd /app/jnj-orca-server
+
+            echo "==> Fetching code"
+            git fetch --all --prune
+            if git show-ref --verify --quiet refs/heads/${TARGET_BRANCH}; then
+              git checkout ${TARGET_BRANCH}
+            else
+              git checkout -b ${TARGET_BRANCH} origin/${TARGET_BRANCH}
+            fi
+            git reset --hard origin/${TARGET_BRANCH}
+
+            echo "==> Detect docker compose"
+            if command -v docker compose >/dev/null 2>&1; then
+              DC="docker compose"
+            else
+              DC="docker-compose"
+            fi
+
+            echo "==> Build (no cache) & pull base images"
+            $DC down || true
+            $DC build --no-cache --pull
+
+            echo "==> Up (detached)"
+            $DC up -d
+
+            echo "==> Status"
+            $DC ps
+            echo "==> Tail logs"
+            $DC logs --tail=100 || true
